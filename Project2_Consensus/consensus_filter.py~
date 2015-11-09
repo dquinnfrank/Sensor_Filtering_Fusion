@@ -1,0 +1,268 @@
+# Project 2: Consensus Filter
+# David Frank
+
+# For getting commandline arguments
+import argparse
+
+# For numerical operations
+import numpy as np
+
+# For plotting results
+import matplotlib.pyplot as plt
+
+# Working 2D space right now
+R_space = 2
+
+# A single node in the sensor network
+# R_space is the number of dimensions being worked in
+class Node:
+
+	# Constructor
+	#
+	# environment : Environment()
+	# Object that the node will use to find information about the environment
+	#
+	# network : Network()
+	# This node is a member of the network
+	# Used to find information about the network
+	#
+	# name : string
+	# A unique name for this node
+	#
+	# reading_noise : float
+	# the noise of the reading as defined by cv in the project description
+	#
+	# TODO : figure out what this is
+	# range_s : float
+	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6):
+
+		# Save the environment and network
+		self.environment = environment
+		self.network = network
+
+		# Save the name of this node
+		self.name = name
+
+		# Save the reading parameters
+		self.reading_noise = reading_noise
+		self.range_s = range_s
+
+	# Gets the postion
+	#
+	# return : numpy array : shape (R_space,)
+	def get_position(self):
+
+		return self.environment.get_node_position(self.name)
+
+	# Gets the sensor reading of this node
+	#
+	# return : numpy array : shape (R_space,)
+	def get_sensor_reading(self):
+
+		# Get the deviation for the noise term
+		sigma = (np.linalg.norm(self.get_position() - network.get_network_average_position()) ** 2 + reading_noise) / (range_s ** 2)
+
+		# Get the noise
+		noise = np.random.normal(scale=sigma, size=(R_space,))
+
+		# Get the measurement from the environment and add the noise
+		measurement = self.environment.get_node_position(self.name) + noise
+
+# The environment that the nodes are in
+# Nodes interact with this class to find their positions and sensor readings
+class Environment:
+
+	# Class members
+	#
+	# nodes : dictionary : (node_name : position)
+	# Holds information about nodes
+	# position : numpy array : shape (R_space,)
+	#
+	# target_function : function(numeric time_step)
+	# Gives the true position of the target as a function of time
+
+	# Constructor
+	#
+	# target : function(numeric time_step)
+	# Needs to give the position of the target being tracked as a function of time
+	def __init__(self, target_function):
+
+		# Create the node dictionary
+		self.nodes = {}
+
+		# Save the target function
+		self.target_function = target_function
+
+	# Adds a node to the nework at the specified postion
+	#
+	# node_name : string
+	# The unique name of the node
+	#
+	# node_position : numpy array : shape (R_space,)
+	# The location of the node in the environment
+	def add_node(self, node_name, node_position):
+
+		self.nodes[node_name] = node_position
+
+	# Returns the position of a node
+	#
+	# node_name : string
+	# The name of the node to get the postion of
+	#
+	# return : numpy array : shape (R_space)
+	# The position of the specified node
+	def get_node_position(self, node_name):
+
+		return self.nodes[node_name]
+
+	# Returns the true position of the target
+	#
+	# time_step : numeric
+	# The time being evaluated
+	#
+	# return : numpy array : shape (R_space,)
+	def get_target_position(self, time_step):
+
+		return self.target_function(time_step)
+
+# A network of sensor nodes
+class Network:
+
+	# Class members
+	# nodes : dictionary : (node_name, node_object)
+	# The node objects
+
+	# Constructor
+	#
+	def __init__(self):
+
+		# Create the node dictionary
+		self.nodes = {}
+
+	# Adds a node to the nework
+	#
+	# node_name : string
+	# The unique name of the node
+	def add_node(self, node_name, node_object):
+
+		# Add the node
+		self.nodes[node_name] = node_object
+
+	# Generator that returns the names of all nodes in the network
+	#
+	# yield : str
+	def node_names(self):
+
+		for node_name in self.nodes.keys():
+
+			yield node_name
+
+	# Gets average position of all nodes in the network
+	#
+	# return : numpy array : shape (R_space,)
+	def get_network_average_position(self):
+
+		# The total number of nodes in the network
+		num_nodes = len(self.nodes)
+
+		# Get the location of all nodes
+		all_nodes = np.empty((num_nodes, R_space))
+		for index, item in enumerate(self.nodes.values()):
+
+			all_nodes[index] = item.get_position()
+
+		# Get the sum of all of the positions along space dim and divide by the number of nodes
+		average_position = np.sum(all_nodes, axis=0) / num_nodes
+
+		return average_position
+		
+
+# Runs the entire consensus filter and visualizes results
+class Simulate:
+
+	# Class members
+	#
+	# environment : Environment()
+	# Object that handles the environment where the nodes are
+	#
+	# network : Network()
+	# This node is a member of the network
+	# Used to find information about the network
+
+	# Constructor
+	def __init__(self):
+
+		# Create the environment
+		# Use a constant position for the target
+		self.environment = Environment(lambda t : np.array([50.0, 50.0]))
+
+		# Create the network
+		self.network = Network()
+
+		# Randomly generate 10 nodes with positions around the target
+		random_nodes = np.random.rand(10, R_space) * 100
+
+		# Place the nodes into the environment and network
+		for node_index, node_position in enumerate(random_nodes):
+
+			# Name is just the index as a string
+			node_name = str(node_index)
+
+			# Create the node, use default values
+			new_node = Node(self.environment, self.network, node_name)
+
+			# Add to environment
+			self.environment.add_node(node_name, node_position)
+
+			# Add to the network
+			self.network.add_node(node_name, new_node)
+
+	# Shows information about the network through matplotlib
+	# Shows positions of nodes and location of the object being sensed
+	def visualize(self):
+
+		# Figure 1 will be the locations of nodes and the tracked object
+		plt.figure(1)
+
+		# Set the title
+		plt.title("Node and Target Positions")
+
+		# Set the x and y axis names
+		plt.xlabel("X location")
+		plt.ylabel("Y location")
+
+		# Add the locations of every node in the graph
+		# Uses the true positions in the environment
+		node_positions_x = []
+		node_positions_y = []
+		for node_name in self.network.node_names():
+
+			# Get the position of the node
+			node_position = self.environment.get_node_position(node_name)
+
+			# Add it to the list
+			node_positions_x.append(node_position[0])
+			node_positions_y.append(node_position[1])
+
+		# Plot points
+		plt.plot(node_positions_x, node_positions_y, 'ro', label="Nodes")
+
+		# Plot the target location
+		# Use the starting position, target is stationary for now
+		target_position = self.environment.get_target_position(0)
+		plt.plot(target_position[0], target_position[1], 'gx', label="Target")
+
+		# Set the legend
+		plt.legend(loc="best")
+
+		print "Displaying positions of nodes and the target"
+		print "Exit window to continue"
+
+		# Show the graph
+		plt.show()
+
+if __name__ == "__main__":
+
+	sim = Simulate()
+
+	sim.visualize()
