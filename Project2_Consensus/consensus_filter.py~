@@ -7,6 +7,9 @@ import argparse
 # For numerical operations
 import numpy as np
 
+# For getting distances
+from scipy.spatial import distance
+
 # For plotting results
 import matplotlib.pyplot as plt
 
@@ -34,7 +37,10 @@ class Node:
 	#
 	# TODO : figure out what this is
 	# range_s : float
-	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6):
+	#
+	# consensus_method : string
+	# The name of the method to use to fuse readings from neighbors
+	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6, consensus_method = "Max-degree"):
 
 		# Save the environment and network
 		self.environment = environment
@@ -46,6 +52,18 @@ class Node:
 		# Save the reading parameters
 		self.reading_noise = reading_noise
 		self.range_s = range_s
+
+		# This holds the neighbors of this node
+		self.neighbors = []
+
+		# Holds the readings of every neighbor
+		self.neighbor_readings = {}
+
+		# The last reading that is valid, to avoid race conditions among node reports
+		self.stable_reading = None
+
+		# Set which consensus method to use
+		#self.fuse_readings = self.consensus_methods[consensus_method]
 
 	# Gets the postion
 	#
@@ -68,6 +86,46 @@ class Node:
 		# Get the measurement from the environment and add the noise
 		measurement = self.environment.get_node_position(self.name) + noise
 
+		return measurement
+
+	# Acquires the neighbors of this node
+	def acquire_neighbors(self):
+
+		self.neighbors = self.environment.get_node_neighbors(self.name)
+
+	# Gets the degree of this node
+	# Does not update before checking
+	def get_degree(self):
+
+		return len(self.neighbors)
+
+	# Gets the readings from every neighbor
+	def acquire_neighbor_readings(self):
+
+		# Clear current readings
+		self.neighbor_readings = {}
+
+		# Update the neighbors
+		self.acquire_neighbors()
+
+		# Go through each neighbor and get the reading
+		for node in self.neighbors:
+
+			self.neighbor_readings[node] = self.network.get_node_reading(node)
+
+	# Sets the reading for this node, and returns it
+	# Output is based on the consensus method choosen for the node
+	def reading(self):
+
+		# Update the neighbor readings
+		self.acquire_neighbor_readings()
+
+		# Use the set consensus method to get the reading
+		#self.stable_reading = self.fuse_readings()
+
+		# Return the reading
+		return self.stable_reading
+
 # The environment that the nodes are in
 # Nodes interact with this class to find their positions and sensor readings
 class Environment:
@@ -85,13 +143,25 @@ class Environment:
 	#
 	# target : function(numeric time_step)
 	# Needs to give the position of the target being tracked as a function of time
-	def __init__(self, target_function):
+	#
+	# communication_radius : float
+	# Determines how far a node can communicate
+	# Defaults to None, means that the node can communicate with every other node in network
+	#
+	# max_neighbors : int
+	# The maximum number of neighbors to accept, nodes closer have priority
+	# Defaults to None, means that every node in the communication_radius will be a neighbor
+	def __init__(self, target_function, communication_radius = None, max_neighbors = None):
 
 		# Create the node dictionary
 		self.nodes = {}
 
 		# Save the target function
 		self.target_function = target_function
+
+		# Set the node communication parameters
+		self.communication_radius = communication_radius
+		self.max_neighbors = max_neighbors
 
 	# Adds a node to the nework at the specified postion
 	#
@@ -125,6 +195,57 @@ class Environment:
 
 		return self.target_function(time_step)
 
+	# Returns the neighbors of the node
+	#
+	# Returns : list[strings]
+	# The nodes that are the neighbors of the specified node
+	def get_node_neighbors(self, node_name):
+
+		# Get the location of the interest node
+		node_position = self.nodes[node_name]
+
+		# Get the distances to every other node in the network
+		names = []
+		distances = []
+		for name in self.nodes:
+
+			# Get the position
+			position = self.nodes[name]
+
+			# Ignore if the node is the interest node
+			if node_name != name:
+
+				# Get the distance between the nodes
+				dist = distance.euclidean(node_position, position)
+
+				# If the communication_radius is None, add the node
+				if self.communication_radius is None:
+
+					# Add the node to the name list
+					names.append(name)
+
+					# Add the distance
+					distances.append(dist)
+
+				# If communication_radius is sent and distance is within range, add the node to the lists
+				elif distance <= communication_radius:
+
+					# Add the node to the name list
+					names.append(name)
+
+					# Add the distance
+					distances.append(dist)
+
+		# Sort the name list by the distances
+		closest = [n for (d,n) in sorted(zip(distances, names))]
+
+		# If max_neighbors is sent, remove all items after the max
+		if self.max_neighbors is not None:
+
+			closest = closest[:self.max_neighbors]
+
+		return closest
+
 # A network of sensor nodes
 class Network:
 
@@ -150,7 +271,7 @@ class Network:
 
 	# Generator that returns the names of all nodes in the network
 	#
-	# yield : str
+	# yield : string
 	def node_names(self):
 
 		for node_name in self.nodes.keys():
@@ -175,7 +296,64 @@ class Network:
 		average_position = np.sum(all_nodes, axis=0) / num_nodes
 
 		return average_position
-		
+
+	# Gets the stable reading of a node
+	def get_node_reading(self, node_name):
+
+		return self.nodes[node_name].stable_reading
+
+	# Gets the degree of a node
+	def get_node_degree(self, node_name):
+
+		return self.nodes[node_name].get_degree()
+
+	# Updates the neighbors of every node
+	def update_neighbors(self):
+
+		# The nodes are all stored in the values
+		for node in self.nodes.values():
+
+			# Update
+			node.acquire_neighbors()
+
+	# Makes an undirected graph from the nodes and their neighbors
+	#
+	# Returns a list of all edges
+	def make_graph(self):
+
+		# Update the neighbors in the graph
+		self.update_neighbors()
+
+		# Go through each node and get their neighbors
+		edges = []
+		for node_name in self.nodes:
+
+			# Get the neighbors
+			node_neighbors = self.nodes[node_name].neighbors
+
+			# Go through neighbors
+			for neighbor_name in node_neighbors:
+
+				# Make the edge key
+				edge_key = "-".join(sorted([node_name, neighbor_name]))
+
+				# Add it to the edge list if it is not already present
+				if edge_key not in edges:
+
+					edges.append(edge_key)
+
+		return edges
+
+	# Gets the nodes with the lowest and highest number of neighbors
+	#
+	# return : string, string
+	# names of the lowest, highest
+	#def get_interest_nodes(self):
+
+		# Go through each node in the network to find the min and max degrees
+		#for name in self.node_names():
+
+			
 
 # Runs the entire consensus filter and visualizes results
 class Simulate:
@@ -231,6 +409,22 @@ class Simulate:
 		plt.xlabel("X location")
 		plt.ylabel("Y location")
 
+		# Plot the neighbors of each node
+		edges = self.network.make_graph()
+
+		# Make a line for each neighbor
+		for edge in edges:
+
+			# Unpack the node names
+			first_node, second_node = edge.split("-")
+
+			# Get the coordinates of each node
+			first_coordinates = self.environment.get_node_position(first_node)
+			second_coordinates = self.environment.get_node_position(second_node)
+
+			# Make a line
+			plt.plot([first_coordinates[0], second_coordinates[0]], [first_coordinates[1], second_coordinates[1]], 'bs-', markersize=0.0)
+
 		# Add the locations of every node in the graph
 		# Uses the true positions in the environment
 		node_positions_x = []
@@ -250,7 +444,7 @@ class Simulate:
 		# Plot the target location
 		# Use the starting position, target is stationary for now
 		target_position = self.environment.get_target_position(0)
-		plt.plot(target_position[0], target_position[1], 'gx', label="Target")
+		plt.plot(target_position[0], target_position[1], 'g*', markersize=20.0, label="Target")
 
 		# Set the legend
 		plt.legend(loc="best")
