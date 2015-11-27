@@ -20,6 +20,19 @@ R_space = 2
 # R_space is the number of dimensions being worked in
 class Node:
 
+	# The methods for fusing neighbor readings
+	consensus_methods = {
+				"Weight Design 1" : 1,
+				"Weight Design 2" : 2,
+				"Max Degree" : 3,
+				"Metropolis" : 4
+				}
+	
+	# Class members
+	#
+	# neighbors : list
+	# Holds the names of all neighboring nodes
+
 	# Constructor
 	#
 	# environment : Environment()
@@ -35,12 +48,12 @@ class Node:
 	# reading_noise : float
 	# the noise of the reading as defined by cv in the project description
 	#
-	# TODO : figure out what this is
 	# range_s : float
+	# optimal sensing range
 	#
 	# consensus_method : string
 	# The name of the method to use to fuse readings from neighbors
-	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6, consensus_method = "Max-degree"):
+	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6, consensus_method = "Max Degree"):
 
 		# Save the environment and network
 		self.environment = environment
@@ -63,7 +76,7 @@ class Node:
 		self.stable_reading = None
 
 		# Set which consensus method to use
-		#self.fuse_readings = self.consensus_methods[consensus_method]
+		self.fuse_readings = self.consensus_methods[consensus_method]
 
 	# Gets the postion
 	#
@@ -121,7 +134,7 @@ class Node:
 		self.acquire_neighbor_readings()
 
 		# Use the set consensus method to get the reading
-		#self.stable_reading = self.fuse_readings()
+		self.stable_reading = self.fuse_readings()
 
 		# Return the reading
 		return self.stable_reading
@@ -228,7 +241,7 @@ class Environment:
 					distances.append(dist)
 
 				# If communication_radius is sent and distance is within range, add the node to the lists
-				elif distance <= communication_radius:
+				elif dist <= self.communication_radius:
 
 					# Add the node to the name list
 					names.append(name)
@@ -252,6 +265,9 @@ class Network:
 	# Class members
 	# nodes : dictionary : (node_name, node_object)
 	# The node objects
+	#
+	# edges : list : "first_name-second_name" sorted lexigraphically
+	# Represents an undirected graph of neighbors
 
 	# Constructor
 	#
@@ -259,6 +275,9 @@ class Network:
 
 		# Create the node dictionary
 		self.nodes = {}
+
+		# Holds the edges in the network
+		self.edges = []
 
 	# Adds a node to the nework
 	#
@@ -325,7 +344,7 @@ class Network:
 		self.update_neighbors()
 
 		# Go through each node and get their neighbors
-		edges = []
+		self.edges = []
 		for node_name in self.nodes:
 
 			# Get the neighbors
@@ -338,11 +357,37 @@ class Network:
 				edge_key = "-".join(sorted([node_name, neighbor_name]))
 
 				# Add it to the edge list if it is not already present
-				if edge_key not in edges:
+				if edge_key not in self.edges:
 
-					edges.append(edge_key)
+					self.edges.append(edge_key)
 
-		return edges
+		return self.edges
+
+	# Checks to make sure that the network is connected
+	#
+	# update : bool
+	# If true, neighbors will be updated before checking
+	#
+	# Return Bool
+	def check_connected(self, update=True):
+
+		# TEMP DISABLE
+		return True
+
+		# Update if needed
+		if update:
+
+			self.update_neighbors()
+
+		# Go through each node checking that each degree is greater than 0
+		for node in self.nodes:
+
+			# Only one node needs to be disconnnected to fail
+			if len(self.nodes[node].neighbors) < 1:
+
+				return False
+
+		return True
 
 	# Gets the nodes with the lowest and highest number of neighbors
 	#
@@ -372,28 +417,54 @@ class Simulate:
 
 		# Create the environment
 		# Use a constant position for the target
-		self.environment = Environment(lambda t : np.array([50.0, 50.0]))
+		self.environment = Environment(lambda t : np.array([50.0, 50.0]), communication_radius = 50.0)
 
-		# Create the network
-		self.network = Network()
+		# Make a network
+		self.make_network()
 
-		# Randomly generate 10 nodes with positions around the target
-		random_nodes = np.random.rand(10, R_space) * 100
+	# Makes a network, ensuring that it is connected
+	#
+	# retry_max : int
+	# The maximum number of times to create a new network if they keep ending up disconnected
+	# Throws exception after too many failures
+	def make_network(self, retry_max = 10):
 
-		# Place the nodes into the environment and network
-		for node_index, node_position in enumerate(random_nodes):
+		# Redo if the network is disconnected
+		retry_count = 0
+		network_connected = False
+		while retry_count < retry_max and not network_connected:
 
-			# Name is just the index as a string
-			node_name = str(node_index)
+			# Create the network
+			self.network = Network()
 
-			# Create the node, use default values
-			new_node = Node(self.environment, self.network, node_name)
+			# Randomly generate 10 nodes with positions around the target
+			random_nodes = np.random.rand(10, R_space) * 100
 
-			# Add to environment
-			self.environment.add_node(node_name, node_position)
+			# Place the nodes into the environment and network
+			for node_index, node_position in enumerate(random_nodes):
 
-			# Add to the network
-			self.network.add_node(node_name, new_node)
+				# Name is just the index as a string
+				node_name = str(node_index)
+
+				# Create the node, use default values
+				new_node = Node(self.environment, self.network, node_name)
+
+				# Add to environment
+				self.environment.add_node(node_name, node_position)
+
+				# Add to the network
+				self.network.add_node(node_name, new_node)
+
+			# Get the connected flag
+			network_connected = self.network.check_connected()
+
+			# Increment counter
+			retry_count += 1
+
+		# Throw exception
+		if not network_connected:
+
+			raise RuntimeError
 
 	# Shows information about the network through matplotlib
 	# Shows positions of nodes and location of the object being sensed
