@@ -16,15 +16,45 @@ import matplotlib.pyplot as plt
 # Working 2D space right now
 R_space = 2
 
+# Target reading is 1D right now
+T_space = 1
+
 # A single node in the sensor network
 # R_space is the number of dimensions being worked in
 class Node:
+
+	# Implementations of fusing sensor readings
+
+	# Max Degree
+	def max_degree(self):
+
+		# Go through each neighbor reading and accumulate the reading
+		# Each neighbor reading has 1 / total_nodes as its weight
+		acc_reading = np.zeros(T_space)
+		for neighbor_name in self.neighbor_readings:
+
+			# Get the value of the neighbor reading
+			neighbor_value = self.neighbor_readings[neighbor_name]
+
+			# Set the weight for the reading
+			weight = 1.0 / self.network.total_nodes()
+
+			# Add the reading based on the weight
+			acc_reading += weight * neighbor_value
+
+		# Set the weight of this node so that the weights all sum to 1
+		self_weight = 1 - self.get_degree() / float(self.network.total_nodes())
+
+		# Add the weight of this node
+		acc_reading += self_weight * self.get_sensor_reading()
+
+		return acc_reading
 
 	# The methods for fusing neighbor readings
 	consensus_methods = {
 				"Weight Design 1" : 1,
 				"Weight Design 2" : 2,
-				"Max Degree" : 3,
+				"Max Degree" : max_degree,
 				"Metropolis" : 4
 				}
 	
@@ -32,6 +62,12 @@ class Node:
 	#
 	# neighbors : list
 	# Holds the names of all neighboring nodes
+	#
+	# stable_reading : np.array : shape(T_space)
+	# The reading from the last update, needed to avoid race conditions
+	#
+	# unstable_reading : np.array : shape(T_space)
+	# The reading after running the consensus for this node, while other nodes are still updating
 
 	# Constructor
 	#
@@ -73,10 +109,32 @@ class Node:
 		self.neighbor_readings = {}
 
 		# The last reading that is valid, to avoid race conditions among node reports
-		self.stable_reading = None
+		# Use the intial estimate of the target without any fusion
+		self.stable_reading = np.random.normal(scale=2, size=(T_space,)) + self.environment.get_target_reading_at(0)
+
+		# The value storing the consensus while the other nodes are updating
+		self.unstable_reading = None
 
 		# Set which consensus method to use
 		self.fuse_readings = self.consensus_methods[consensus_method]
+
+	# Sets the unstable reading for this node, and returns it
+	# Output is based on the consensus method choosen for the node
+	def reading(self):
+
+		# Update the neighbor readings
+		self.acquire_neighbor_readings()
+
+		# Use the set consensus method to get the reading
+		self.unstable_reading = self.fuse_readings(self)
+
+		# Return the reading
+		return self.unstable_reading
+
+	# Once the network is done updating, the unstable reading becomes the new stable reading
+	def stabilize(self):
+
+		self.stable_reading = self.unstable_reading
 
 	# Gets the postion
 	#
@@ -91,13 +149,13 @@ class Node:
 	def get_sensor_reading(self):
 
 		# Get the deviation for the noise term
-		sigma = (np.linalg.norm(self.get_position() - network.get_network_average_position()) ** 2 + reading_noise) / (range_s ** 2)
+		sigma = (np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2)
 
 		# Get the noise
-		noise = np.random.normal(scale=sigma, size=(R_space,))
+		noise = np.random.normal(scale=sigma, size=(T_space,))
 
 		# Get the measurement from the environment and add the noise
-		measurement = self.environment.get_node_position(self.name) + noise
+		measurement = self.environment.get_target_position() + noise
 
 		return measurement
 
@@ -126,19 +184,6 @@ class Node:
 
 			self.neighbor_readings[node] = self.network.get_node_reading(node)
 
-	# Sets the reading for this node, and returns it
-	# Output is based on the consensus method choosen for the node
-	def reading(self):
-
-		# Update the neighbor readings
-		self.acquire_neighbor_readings()
-
-		# Use the set consensus method to get the reading
-		self.stable_reading = self.fuse_readings()
-
-		# Return the reading
-		return self.stable_reading
-
 # The environment that the nodes are in
 # Nodes interact with this class to find their positions and sensor readings
 class Environment:
@@ -151,11 +196,17 @@ class Environment:
 	#
 	# target_function : function(numeric time_step)
 	# Gives the true position of the target as a function of time
+	#
+	# time_step : numeric
+	# The current time to evalutate
 
 	# Constructor
 	#
-	# target : function(numeric time_step)
+	# target_position : function(numeric time_step)
 	# Needs to give the position of the target being tracked as a function of time
+	#
+	# target_reading : function(numeric time_step)
+	# Needs to give the reading of the target being tracked as a function of time
 	#
 	# communication_radius : float
 	# Determines how far a node can communicate
@@ -164,17 +215,28 @@ class Environment:
 	# max_neighbors : int
 	# The maximum number of neighbors to accept, nodes closer have priority
 	# Defaults to None, means that every node in the communication_radius will be a neighbor
-	def __init__(self, target_function, communication_radius = None, max_neighbors = None):
+	def __init__(self, target_position, target_reading, communication_radius = None, max_neighbors = None):
 
 		# Create the node dictionary
 		self.nodes = {}
 
-		# Save the target function
-		self.target_function = target_function
+		# Save the target position function
+		self.target_position = target_position
+
+		# Save the reading position function
+		self.target_reading = target_reading
 
 		# Set the node communication parameters
 		self.communication_radius = communication_radius
 		self.max_neighbors = max_neighbors
+
+		# Set the initial time to 0
+		self.time_step = 0
+
+	# Moves the environment ahead by the set amount
+	def advance(self, increment = 1):
+
+		self.time_step += increment
 
 	# Adds a node to the nework at the specified postion
 	#
@@ -200,13 +262,31 @@ class Environment:
 
 	# Returns the true position of the target
 	#
-	# time_step : numeric
-	# The time being evaluated
+	# return : numpy array : shape (R_space,)
+	def get_target_position(self):
+
+		return self.get_target_position_at(self.time_step)
+
+	# Returns the true reading of the target
+	#
+	# return : numpy array : shape (T_space,)
+	def get_target_reading(self):
+
+		return self.get_target_reading_at(self.time_step)
+
+	# Evaluates the position function at the specified time step
 	#
 	# return : numpy array : shape (R_space,)
-	def get_target_position(self, time_step):
+	def get_target_position_at(self, time_step):
 
-		return self.target_function(time_step)
+		return self.target_position(time_step)
+
+	# Evaluates the reading function at the specified time step
+	#
+	# return : numpy array : shape (T_space,)
+	def get_target_reading_at(self, time_step):
+
+		return self.target_reading(time_step)
 
 	# Returns the neighbors of the node
 	#
@@ -279,6 +359,21 @@ class Network:
 		# Holds the edges in the network
 		self.edges = []
 
+	# Runs the network to get the reading of the nodes
+	# TODO: Return mean and variance of the network
+	def get_all_readings(self):
+
+		# Update the readings of all nodes
+		for node_name in self.nodes:
+
+			# Updates the value in unstable_reading
+			self.nodes[node_name].reading()
+
+		# Once all nodes have updated, they can be stabilized
+		for node_name in self.nodes:
+
+			self.nodes[node_name].stabilize()
+
 	# Adds a node to the nework
 	#
 	# node_name : string
@@ -303,7 +398,7 @@ class Network:
 	def get_network_average_position(self):
 
 		# The total number of nodes in the network
-		num_nodes = len(self.nodes)
+		num_nodes = self.total_nodes()
 
 		# Get the location of all nodes
 		all_nodes = np.empty((num_nodes, R_space))
@@ -371,9 +466,6 @@ class Network:
 	# Return Bool
 	def check_connected(self, update=True):
 
-		# TEMP DISABLE
-		return True
-
 		# Update if needed
 		if update:
 
@@ -388,6 +480,11 @@ class Network:
 				return False
 
 		return True
+
+	# Gives the total number of nodes in the network
+	def total_nodes(self):
+
+		return len(self.nodes)
 
 	# Gets the nodes with the lowest and highest number of neighbors
 	#
@@ -416,8 +513,8 @@ class Simulate:
 	def __init__(self):
 
 		# Create the environment
-		# Use a constant position for the target
-		self.environment = Environment(lambda t : np.array([50.0, 50.0]), communication_radius = 50.0)
+		# Use a constant position and reading for the target
+		self.environment = Environment(lambda t : np.array([50.0, 50.0]), lambda t : np.array([50.0]), communication_radius = 50.0)
 
 		# Make a network
 		self.make_network()
@@ -465,6 +562,18 @@ class Simulate:
 		if not network_connected:
 
 			raise RuntimeError
+
+	# Runs the network and environment for the specified number of iterations
+	# TODO: make convergence a condition
+	def run(self, iterations = 1000):
+
+		for time_step in range(iterations):
+
+			# Have the network update all of the readings
+			self.network.get_all_readings()
+
+			# Advance the environment
+			self.environment.advance()
 
 	# Shows information about the network through matplotlib
 	# Shows positions of nodes and location of the object being sensed
@@ -514,7 +623,7 @@ class Simulate:
 
 		# Plot the target location
 		# Use the starting position, target is stationary for now
-		target_position = self.environment.get_target_position(0)
+		target_position = self.environment.get_target_position()
 		plt.plot(target_position[0], target_position[1], 'g*', markersize=20.0, label="Target")
 
 		# Set the legend
@@ -529,5 +638,7 @@ class Simulate:
 if __name__ == "__main__":
 
 	sim = Simulate()
+
+	sim.run()
 
 	sim.visualize()
