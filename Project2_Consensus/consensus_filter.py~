@@ -7,6 +7,9 @@ import argparse
 # For numerical operations
 import numpy as np
 
+# For statistical analysis
+import scipy
+
 # For getting distances
 from scipy.spatial import distance
 
@@ -22,6 +25,9 @@ T_space = 1
 # A single node in the sensor network
 # R_space is the number of dimensions being worked in
 class Node:
+
+	#TEMP DEBUG
+	count = 0
 
 	# Implementations of fusing sensor readings
 
@@ -42,11 +48,23 @@ class Node:
 			# Add the reading based on the weight
 			acc_reading += weight * neighbor_value
 
-		# Set the weight of this node so that the weights all sum to 1
+			if self.name == "0" and self.count == 0:
+
+				print "Acc ", acc_reading, " n_v ", neighbor_value, " w ", weight
+
+		if self.name == "0" and self.count == 0:
+			# Set the weight of this node so that the weights all sum to 1
+			print "Self deg ", self.get_degree(), " tot nodes ", self.network.total_nodes(), " div ",  self.get_degree() / float(self.network.total_nodes())
+			print "self val ", self.get_sensor_reading()
+
 		self_weight = 1 - self.get_degree() / float(self.network.total_nodes())
 
 		# Add the weight of this node
 		acc_reading += self_weight * self.get_sensor_reading()
+
+		if self.name == "0" and self.count == 0:
+
+			print "Acc fin", acc_reading
 
 		return acc_reading
 
@@ -109,8 +127,8 @@ class Node:
 		self.neighbor_readings = {}
 
 		# The last reading that is valid, to avoid race conditions among node reports
-		# Use the intial estimate of the target without any fusion
-		self.stable_reading = np.random.normal(scale=2, size=(T_space,)) + self.environment.get_target_reading_at(0)
+		# Use a noisy intial estimate of the target without any fusion
+		self.stable_reading = np.random.normal(scale=500.0, size=(T_space,)) + self.environment.get_target_reading_at(0)
 
 		# The value storing the consensus while the other nodes are updating
 		self.unstable_reading = None
@@ -127,6 +145,10 @@ class Node:
 
 		# Use the set consensus method to get the reading
 		self.unstable_reading = self.fuse_readings(self)
+
+		if self.name == "0":
+
+			print self.unstable_reading
 
 		# Return the reading
 		return self.unstable_reading
@@ -149,13 +171,20 @@ class Node:
 	def get_sensor_reading(self):
 
 		# Get the deviation for the noise term
-		sigma = (np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2)
+		# TEMP OVERRIDE
+		#sigma = (np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2)
+		sigma = .5
 
 		# Get the noise
 		noise = np.random.normal(scale=sigma, size=(T_space,))
 
 		# Get the measurement from the environment and add the noise
-		measurement = self.environment.get_target_position() + noise
+		measurement = self.environment.get_target_reading() + noise
+
+		if self.name == "0" and self.count == 0:
+
+			print "position ", self.get_position(), " avg_pos ", self.network.get_network_average_position()
+			print "noise ", noise
 
 		return measurement
 
@@ -361,7 +390,7 @@ class Network:
 
 	# Runs the network to get the reading of the nodes
 	# TODO: Return mean and variance of the network
-	def get_all_readings(self):
+	def update_all_readings(self):
 
 		# Update the readings of all nodes
 		for node_name in self.nodes:
@@ -373,6 +402,30 @@ class Network:
 		for node_name in self.nodes:
 
 			self.nodes[node_name].stabilize()
+
+	# Uses the readings from all nodes to report the mean and standard deviation of all nodes
+	#
+	# return : average, std
+	def get_network_reading(self):
+
+		# Update the readings for all nodes
+		self.update_all_readings()
+
+		# Get the current readings from all nodes
+		node_readings = []
+		for node_name in self.nodes:
+
+			node_readings.append(self.nodes[node_name].stable_reading)
+
+		node_readings = np.array(node_readings)
+
+		# Get the average
+		network_avg = scipy.average(node_readings)
+
+		# Get the standard deviation
+		network_std = scipy.std(node_readings)
+
+		return network_avg, network_std
 
 	# Adds a node to the nework
 	#
@@ -508,6 +561,9 @@ class Simulate:
 	# network : Network()
 	# This node is a member of the network
 	# Used to find information about the network
+	#
+	# info : dic
+	# Information about the network at each timestep
 
 	# Constructor
 	def __init__(self):
@@ -518,6 +574,10 @@ class Simulate:
 
 		# Make a network
 		self.make_network()
+
+		# Holds the network average and standard deviation at each time step
+		#self.info = {}
+		self.info = []
 
 	# Makes a network, ensuring that it is connected
 	#
@@ -570,7 +630,11 @@ class Simulate:
 		for time_step in range(iterations):
 
 			# Have the network update all of the readings
-			self.network.get_all_readings()
+			avg, std = self.network.get_network_reading()
+
+			# Log the info
+			#self.info[time_step] = self.environment.get_target_position(), avg, std
+			self.info.append([self.environment.get_target_position(), avg, std])
 
 			# Advance the environment
 			self.environment.advance()
@@ -626,6 +690,24 @@ class Simulate:
 		target_position = self.environment.get_target_position()
 		plt.plot(target_position[0], target_position[1], 'g*', markersize=20.0, label="Target")
 
+		# Plot the network prediction on another figure
+		plt.figure(2)
+
+		plt.title("Network predictions")
+
+		plt.xlabel("Time")
+		plt.ylabel("Prediction")
+
+		# Get all of the predictions
+		target_prediction = []
+		for item in self.info:
+
+			target_prediction.append(item[1])
+
+		plt.ylim([min(target_prediction) - 20, max(target_prediction) + 20])
+
+		plt.plot(target_prediction, 'b-', label="Network Average Prediction")
+
 		# Set the legend
 		plt.legend(loc="best")
 
@@ -637,8 +719,11 @@ class Simulate:
 
 if __name__ == "__main__":
 
+	# Seed the random function for reproducability
+	np.random.seed(11)
+
 	sim = Simulate()
 
-	sim.run()
+	sim.run(10)
 
 	sim.visualize()
