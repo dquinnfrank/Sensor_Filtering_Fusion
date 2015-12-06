@@ -2,7 +2,8 @@
 # David Frank
 
 # For getting commandline arguments
-import argparse
+#import argparse
+import sys
 
 # For numerical operations
 import numpy as np
@@ -26,16 +27,13 @@ T_space = 1
 # R_space is the number of dimensions being worked in
 class Node:
 
-	#TEMP DEBUG
-	count = 0
-
 	# Implementations of fusing sensor readings
 
 	# Max Degree
+	# Each neighbor gets weight 1 / total_nodes
 	def max_degree(self):
 
 		# Go through each neighbor reading and accumulate the reading
-		# Each neighbor reading has 1 / total_nodes as its weight
 		acc_reading = np.zeros(T_space)
 		for neighbor_name in self.neighbor_readings:
 
@@ -48,32 +46,111 @@ class Node:
 			# Add the reading based on the weight
 			acc_reading += weight * neighbor_value
 
-			if self.name == "0" and self.count == 0:
-
-				print "Acc ", acc_reading, " n_v ", neighbor_value, " w ", weight
-
-		if self.name == "0" and self.count == 0:
-			# Set the weight of this node so that the weights all sum to 1
-			print "Self deg ", self.get_degree(), " tot nodes ", self.network.total_nodes(), " div ",  self.get_degree() / float(self.network.total_nodes())
-			print "self val ", self.get_sensor_reading()
-
-		self_weight = 1 - self.get_degree() / float(self.network.total_nodes())
+		# Set the weight of this node so that the weights all sum to 1
+		self_weight = 1 - (self.get_degree() / float(self.network.total_nodes()))
 
 		# Add the weight of this node
 		acc_reading += self_weight * self.get_sensor_reading()
 
-		if self.name == "0" and self.count == 0:
+		return acc_reading
 
-			print "Acc fin", acc_reading
+	# Metropolis
+	def metropolis(self):
+
+		# Go through each neighbor reading and accumulate the reading
+		acc_reading = np.zeros(T_space)
+		acc_weight = np.zeros(T_space)
+		for neighbor_name in self.neighbor_readings:
+
+			# Get the value of the neighbor reading
+			neighbor_value = self.neighbor_readings[neighbor_name]
+
+			# Set the weight of this neighbor
+			weight = 1.0 / (1.0 + max(self.get_degree(), self.network.get_node_degree(neighbor_name)))
+
+			# Track the weights
+			acc_weight += weight
+
+			# Add the reading based on the weight
+			acc_reading += weight * neighbor_value
+
+		# Set the weight of this node so that all weights sum to 1
+		self_weight = 1.0 - acc_weight
+
+		# Add the reading of this node
+		acc_reading += self_weight * self.get_sensor_reading()
+
+		return acc_reading
+
+	# Weight design 1 from Lecture 10
+	# Choosing the midpoint of possible values
+	# All nodes have the same range sweet spot, so the simplified version can be used
+	def design1(self):
+
+		# Set the design factor as a fraction of the highest possible value
+		# TODO: make this changable by using kwargs
+		design_factor = .5
+
+		# Go through each neighbor reading and accumulate the reading
+		acc_reading = np.zeros(T_space)
+		acc_weight = np.zeros(T_space)
+		for neighbor_name in self.neighbor_readings:
+
+			# Get the value of the neighbor reading
+			neighbor_value = self.neighbor_readings[neighbor_name]
+
+			# Set the weight of this neighbor
+			weight = (design_factor * 2 * self.reading_noise) / ((self.range_s ** 2) * self.get_degree())
+
+			# Track the weights
+			acc_weight += weight
+
+			# Add the reading based on the weight
+			acc_reading += weight * neighbor_value
+
+		# Set the weight of this node so that all weights sum to 1
+		self_weight = 1.0 - acc_weight
+
+		# Add the reading of this node
+		acc_reading += self_weight * self.get_sensor_reading()
+
+		return acc_reading
+
+	# Weight design 2 from Lecture 10
+	# Choosing midpoint of possible values
+	def design2(self):
+
+		# Set the design factor as a fraction of the highest possible value
+		# TODO: make this changable by using kwargs
+		design_factor = .5
+
+		# Get the variance of the node
+		variance = (np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2)
+
+		# Set the self weight of the node
+		self_weight = ((design_factor * self.reading_noise) / self.range_s ** 2) / variance
+
+		# Go through each neighbor reading and accumulate the reading
+		acc_reading = self_weight * self.get_sensor_reading()
+		for neighbor_name in self.neighbor_readings:
+
+			# Get the value of the neighbor reading
+			neighbor_value = self.neighbor_readings[neighbor_name]
+
+			# Set the weight of this neighbor
+			weight = (1 - self_weight) / (self.get_degree())
+
+			# Add the reading based on the weight
+			acc_reading += weight * neighbor_value
 
 		return acc_reading
 
 	# The methods for fusing neighbor readings
 	consensus_methods = {
-				"Weight Design 1" : 1,
-				"Weight Design 2" : 2,
+				"Weight Design 1" : design1,
+				"Weight Design 2" : design2,
 				"Max Degree" : max_degree,
-				"Metropolis" : 4
+				"Metropolis" : metropolis
 				}
 	
 	# Class members
@@ -128,7 +205,7 @@ class Node:
 
 		# The last reading that is valid, to avoid race conditions among node reports
 		# Use a noisy intial estimate of the target without any fusion
-		self.stable_reading = np.random.normal(scale=500.0, size=(T_space,)) + self.environment.get_target_reading_at(0)
+		self.stable_reading = np.random.normal(scale=30, size=(T_space,)) + self.environment.get_target_reading_at(0)
 
 		# The value storing the consensus while the other nodes are updating
 		self.unstable_reading = None
@@ -145,10 +222,6 @@ class Node:
 
 		# Use the set consensus method to get the reading
 		self.unstable_reading = self.fuse_readings(self)
-
-		if self.name == "0":
-
-			print self.unstable_reading
 
 		# Return the reading
 		return self.unstable_reading
@@ -171,20 +244,13 @@ class Node:
 	def get_sensor_reading(self):
 
 		# Get the deviation for the noise term
-		# TEMP OVERRIDE
-		#sigma = (np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2)
-		sigma = .5
+		sigma = np.sqrt((np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2))
 
 		# Get the noise
 		noise = np.random.normal(scale=sigma, size=(T_space,))
 
 		# Get the measurement from the environment and add the noise
 		measurement = self.environment.get_target_reading() + noise
-
-		if self.name == "0" and self.count == 0:
-
-			print "position ", self.get_position(), " avg_pos ", self.network.get_network_average_position()
-			print "noise ", noise
 
 		return measurement
 
@@ -379,7 +445,6 @@ class Network:
 	# Represents an undirected graph of neighbors
 
 	# Constructor
-	#
 	def __init__(self):
 
 		# Create the node dictionary
@@ -564,16 +629,31 @@ class Simulate:
 	#
 	# info : dic
 	# Information about the network at each timestep
+	#
+	# default_consensus_method : string
 
 	# Constructor
-	def __init__(self):
+	#
+	# Area will be square, target will be in the center
+	#
+	# max_range : numeric
+	# The boundary of the environment
+	#
+	# num_nodes : int
+	# How many nodes to put into the network
+	#
+	# default_consensus_method : string
+	def __init__(self, max_range, num_nodes = 10, default_consensus_method = "Max Degree"):
+
+		# Nodes will use this as their consensus method unless another is specified at creation time
+		self.default_consensus_method = default_consensus_method
 
 		# Create the environment
 		# Use a constant position and reading for the target
-		self.environment = Environment(lambda t : np.array([50.0, 50.0]), lambda t : np.array([50.0]), communication_radius = 50.0)
+		self.environment = Environment(lambda t : np.array([max_range / 2.0, max_range / 2.0]), lambda t : np.array([50.0]), communication_radius = 1.7)
 
 		# Make a network
-		self.make_network()
+		self.make_network(max_range, num_nodes = num_nodes)
 
 		# Holds the network average and standard deviation at each time step
 		#self.info = {}
@@ -584,7 +664,7 @@ class Simulate:
 	# retry_max : int
 	# The maximum number of times to create a new network if they keep ending up disconnected
 	# Throws exception after too many failures
-	def make_network(self, retry_max = 10):
+	def make_network(self, max_range, retry_max = 10, num_nodes = 10):
 
 		# Redo if the network is disconnected
 		retry_count = 0
@@ -595,7 +675,7 @@ class Simulate:
 			self.network = Network()
 
 			# Randomly generate 10 nodes with positions around the target
-			random_nodes = np.random.rand(10, R_space) * 100
+			random_nodes = np.random.rand(num_nodes, R_space) * max_range
 
 			# Place the nodes into the environment and network
 			for node_index, node_position in enumerate(random_nodes):
@@ -604,7 +684,7 @@ class Simulate:
 				node_name = str(node_index)
 
 				# Create the node, use default values
-				new_node = Node(self.environment, self.network, node_name)
+				new_node = Node(self.environment, self.network, node_name, consensus_method = self.default_consensus_method)
 
 				# Add to environment
 				self.environment.add_node(node_name, node_position)
@@ -633,7 +713,6 @@ class Simulate:
 			avg, std = self.network.get_network_reading()
 
 			# Log the info
-			#self.info[time_step] = self.environment.get_target_position(), avg, std
 			self.info.append([self.environment.get_target_position(), avg, std])
 
 			# Advance the environment
@@ -698,19 +777,28 @@ class Simulate:
 		plt.xlabel("Time")
 		plt.ylabel("Prediction")
 
+		# Get the target signal at all time points
+		target_signal = []
+		for time_step in range(len(self.info)):
+
+			target_signal.append(self.environment.get_target_reading_at(time_step))
+
+		plt.plot(target_signal, 'r--', label="Target Signal")
+
 		# Get all of the predictions
 		target_prediction = []
 		for item in self.info:
 
 			target_prediction.append(item[1])
 
-		plt.ylim([min(target_prediction) - 20, max(target_prediction) + 20])
+		plt.ylim([min(target_prediction) - 1, max(target_prediction) + 1])
 
 		plt.plot(target_prediction, 'b-', label="Network Average Prediction")
 
 		# Set the legend
 		plt.legend(loc="best")
 
+		print "Network final prediction: ", target_prediction[-1]
 		print "Displaying positions of nodes and the target"
 		print "Exit window to continue"
 
@@ -719,11 +807,14 @@ class Simulate:
 
 if __name__ == "__main__":
 
+	# Get the fusion method
+	#consensus_method = sys.argv[1]
+
 	# Seed the random function for reproducability
-	np.random.seed(11)
+	np.random.seed(50)
 
-	sim = Simulate()
+	sim = Simulate(3, default_consensus_method = "Weight Design 1")
 
-	sim.run(10)
+	sim.run(100)
 
 	sim.visualize()
