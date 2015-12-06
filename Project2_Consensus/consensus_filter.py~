@@ -205,7 +205,9 @@ class Node:
 
 		# The last reading that is valid, to avoid race conditions among node reports
 		# Use a noisy intial estimate of the target without any fusion
-		self.stable_reading = np.random.normal(scale=30, size=(T_space,)) + self.environment.get_target_reading_at(0)
+		#self.stable_reading = np.random.normal(scale=30, size=(T_space,)) + self.environment.get_target_reading_at(0)
+		self.stable_reading = self.environment.get_target_reading_at(0) + np.random.normal(scale=np.sqrt((np.linalg.norm(self.get_position() - self.environment.get_target_position_at(0)) ** 2 + self.reading_noise) / (self.range_s ** 2)), size=(T_space,))
+		#self.stable_reading = self.get_sensor_reading()
 
 		# The value storing the consensus while the other nodes are updating
 		self.unstable_reading = None
@@ -443,6 +445,12 @@ class Network:
 	#
 	# edges : list : "first_name-second_name" sorted lexigraphically
 	# Represents an undirected graph of neighbors
+	#
+	# max_node : string
+	# The name of the node with the most neighbors
+	#
+	# min_node : string
+	# The name of the node with the fewest neighbors
 
 	# Constructor
 	def __init__(self):
@@ -452,6 +460,10 @@ class Network:
 
 		# Holds the edges in the network
 		self.edges = []
+
+		# Interest nodes
+		self.max_node = "0"
+		self.min_node = "0"
 
 	# Runs the network to get the reading of the nodes
 	# TODO: Return mean and variance of the network
@@ -608,12 +620,52 @@ class Network:
 	#
 	# return : string, string
 	# names of the lowest, highest
-	#def get_interest_nodes(self):
+	def get_interest_nodes(self):
 
 		# Go through each node in the network to find the min and max degrees
-		#for name in self.node_names():
+		max_value = 0
+		min_value = len(self.nodes)
+		for name in self.nodes:
 
-			
+			# Check for new max
+			if self.nodes[name].get_degree() >= max_value:
+
+				max_value = self.nodes[name].get_degree()
+
+				self.max_node = name
+
+			# Check for new min
+			elif self.nodes[name].get_degree() <= min_value:
+
+				min_value = self.nodes[name].get_degree()
+
+				self.min_node = name
+
+		return self.max_node, self.min_node
+
+# Target position implementations
+
+# Stationary at the center of the field
+#def stationary_center(time_step, max_range):
+
+#	return np.empty((R_space,)).fill(max_range / 2.0)
+
+# Dictionary of target position functions
+#target_position_functions = {
+#			"Stationary Center" : stationary_center
+#				}
+
+# Target reading implementations
+
+# Always returns 50
+#def constant_50(time_step):
+
+#	return np.empty((T_space,)).fill(50.0)
+
+# Dictionary of target reading functions
+#target_reading_functions = {
+#			"Constant 50" : constant_50
+#				}
 
 # Runs the entire consensus filter and visualizes results
 class Simulate:
@@ -627,7 +679,8 @@ class Simulate:
 	# This node is a member of the network
 	# Used to find information about the network
 	#
-	# info : dic
+	# info : list
+	# [target_reading, target_location, network_average, network_std, max_node_reading, min_node_reading]
 	# Information about the network at each timestep
 	#
 	# default_consensus_method : string
@@ -643,20 +696,42 @@ class Simulate:
 	# How many nodes to put into the network
 	#
 	# default_consensus_method : string
-	def __init__(self, max_range, num_nodes = 10, default_consensus_method = "Max Degree"):
+	def __init__(self, max_range, num_nodes = 10, communication_radius = 1.7, default_consensus_method = "Max Degree", target_position_name = "Stationary Center", target_reading_name = "Constant 50"):
 
 		# Nodes will use this as their consensus method unless another is specified at creation time
 		self.default_consensus_method = default_consensus_method
 
+		# Set the target position function
+		if target_position_name == "Stationary Center":
+
+			target_position_function = lambda time_step: np.full((R_space,), max_range / 2.0)
+
+		# Not known
+		else:
+
+			raise ValueError
+
+		# Set the target reading function
+		if target_reading_name == "Constant 50":
+
+			target_reading_function = lambda time_step: np.full((T_space,), 50.0)
+
+		# Not Known
+		else:
+
+			raise ValueError
+
 		# Create the environment
 		# Use a constant position and reading for the target
-		self.environment = Environment(lambda t : np.array([max_range / 2.0, max_range / 2.0]), lambda t : np.array([50.0]), communication_radius = 1.7)
+		self.environment = Environment(target_position_function, target_reading_function, communication_radius = 1.7)
 
 		# Make a network
 		self.make_network(max_range, num_nodes = num_nodes)
 
+		# Get the nodes to track
+		self.max_node, self.min_node = self.network.get_interest_nodes()
+
 		# Holds the network average and standard deviation at each time step
-		#self.info = {}
 		self.info = []
 
 	# Makes a network, ensuring that it is connected
@@ -683,11 +758,11 @@ class Simulate:
 				# Name is just the index as a string
 				node_name = str(node_index)
 
-				# Create the node, use default values
-				new_node = Node(self.environment, self.network, node_name, consensus_method = self.default_consensus_method)
-
 				# Add to environment
 				self.environment.add_node(node_name, node_position)
+
+				# Create the node, use default values
+				new_node = Node(self.environment, self.network, node_name, consensus_method = self.default_consensus_method)
 
 				# Add to the network
 				self.network.add_node(node_name, new_node)
@@ -713,7 +788,7 @@ class Simulate:
 			avg, std = self.network.get_network_reading()
 
 			# Log the info
-			self.info.append([self.environment.get_target_position(), avg, std])
+			self.info.append([self.environment.get_target_reading(), self.environment.get_target_position(), avg, std, self.network.get_node_reading(self.max_node), self.network.get_node_reading(self.min_node)])
 
 			# Advance the environment
 			self.environment.advance()
@@ -748,6 +823,13 @@ class Simulate:
 			# Make a line
 			plt.plot([first_coordinates[0], second_coordinates[0]], [first_coordinates[1], second_coordinates[1]], 'bs-', markersize=0.0)
 
+		# Mark the interest nodes
+		max_location = self.environment.get_node_position(self.max_node)
+		plt.plot(max_location[0], max_location[1], 'c*', markersize=20.0, label="Max Node")
+
+		min_location = self.environment.get_node_position(self.min_node)
+		plt.plot(min_location[0], min_location[1], 'm*', markersize=20.0, label="Min Node")
+
 		# Add the locations of every node in the graph
 		# Uses the true positions in the environment
 		node_positions_x = []
@@ -762,12 +844,15 @@ class Simulate:
 			node_positions_y.append(node_position[1])
 
 		# Plot points
-		plt.plot(node_positions_x, node_positions_y, 'ro', label="Nodes")
+		plt.plot(node_positions_x, node_positions_y, 'ko', label="Nodes")
 
 		# Plot the target location
 		# Use the starting position, target is stationary for now
 		target_position = self.environment.get_target_position()
-		plt.plot(target_position[0], target_position[1], 'g*', markersize=20.0, label="Target")
+		plt.plot(target_position[0], target_position[1], 'r*', markersize=20.0, label="Target")
+
+		# Set the legend
+		plt.legend(loc="best")
 
 		# Plot the network prediction on another figure
 		plt.figure(2)
@@ -777,28 +862,41 @@ class Simulate:
 		plt.xlabel("Time")
 		plt.ylabel("Prediction")
 
-		# Get the target signal at all time points
+		# Get the target signal, network average, and interest node predictions
 		target_signal = []
-		for time_step in range(len(self.info)):
-
-			target_signal.append(self.environment.get_target_reading_at(time_step))
-
-		plt.plot(target_signal, 'r--', label="Target Signal")
-
-		# Get all of the predictions
-		target_prediction = []
+		network_prediction = []
+		max_prediction = []
+		min_prediction = []
 		for item in self.info:
 
-			target_prediction.append(item[1])
+			# Target
+			target_signal.append(item[0])
 
-		plt.ylim([min(target_prediction) - 1, max(target_prediction) + 1])
+			# Network average
+			network_prediction.append(item[2])
 
-		plt.plot(target_prediction, 'b-', label="Network Average Prediction")
+			# Max prediction
+			max_prediction.append(item[4])
+
+			# Min prediction
+			min_prediction.append(item[5])
+
+		# Network average
+		plt.plot(network_prediction, 'b-', label="Network Average Prediction")
+
+		# Max
+		plt.plot(max_prediction, 'c-', label="Max Node Prediction")
+
+		# Min
+		plt.plot(min_prediction, 'm-', label="Min Node Prediction")
+
+		# Target
+		plt.plot(target_signal, 'r--', label="Target Signal")
 
 		# Set the legend
 		plt.legend(loc="best")
 
-		print "Network final prediction: ", target_prediction[-1]
+		print "Average of last 5 network predictions: ", np.average(network_prediction[-5:], axis = 0), "\n\n"
 		print "Displaying positions of nodes and the target"
 		print "Exit window to continue"
 
@@ -813,7 +911,7 @@ if __name__ == "__main__":
 	# Seed the random function for reproducability
 	np.random.seed(50)
 
-	sim = Simulate(3, default_consensus_method = "Weight Design 1")
+	sim = Simulate(3, default_consensus_method = "Max Degree")
 
 	sim.run(100)
 
