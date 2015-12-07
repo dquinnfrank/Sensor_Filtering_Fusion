@@ -689,6 +689,8 @@ class Simulate:
 		self.default_consensus_method = default_consensus_method
 
 		# Set the target position function
+
+		# Stays in the middle
 		if target_position_name == "StationaryCenter":
 
 			target_position_function = lambda time_step: np.full((R_space,), max_range / 2.0)
@@ -699,9 +701,16 @@ class Simulate:
 			raise ValueError
 
 		# Set the target reading function
+
+		# Stays at 50.0
 		if target_reading_name == "Constant50":
 
 			target_reading_function = lambda time_step: np.full((T_space,), 50.0)
+
+		# Sin wave
+		elif target_reading_name == "SinWave":
+
+			target_reading_function = lambda time_step : np.full((T_space), 2 * np.sin((1/2.0) * time_step))
 
 		# Not Known
 		else:
@@ -990,7 +999,7 @@ if __name__ == "__main__":
 	# Seed the random function for reproducability
 	np.random.seed(50)
 
-	sim = Simulate(3, default_consensus_method = consensus_method, alternate_comm = 1.5)
+	sim = Simulate(3, default_consensus_method = consensus_method, target_reading_name = "SinWave")
 
 	num_iterations = 100
 
