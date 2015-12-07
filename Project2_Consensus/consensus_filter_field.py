@@ -91,30 +91,77 @@ class Node:
 		# TODO: make this changable by using kwargs
 		design_factor = .5
 
-		# Go through each neighbor reading and accumulate the reading
-		acc_reading = np.zeros(T_space)
-		acc_weight = np.zeros(T_space)
-		for neighbor_name in self.neighbor_readings:
+		# Go through each cell
+		for x_index in range(25):
+			for y_index in range(25):
 
-			# Get the value of the neighbor reading
-			neighbor_value = self.neighbor_readings[neighbor_name]
+				cell_index = (x_index, y_index)
+				"""
+				# Make sure this cell is sensed
+				if not np.isnan(self.this_field_prediction[cell_index]):
 
-			# Set the weight of this neighbor
-			weight = (design_factor * 2 * self.reading_noise) / ((self.range_s ** 2) * self.get_degree())
+					# Get all neighbors that also sense the cell
+					neighbor_input = []
+					for neighbor_name in self.neighbor_readings:
 
-			# Track the weights
-			acc_weight += weight
+						for item_name in self.neighbor_readings[neighbor_name]:
 
-			# Add the reading based on the weight
-			acc_reading += weight * neighbor_value
+							#neighbor_input[item_name] = []
 
-		# Set the weight of this node so that all weights sum to 1
-		self_weight = 1.0 - acc_weight
+							if item_name in self.readings.keys():
+								#if self.name == "0":
+								#print self.neighbor_readings
+								neighbor_input.append(self.neighbor_readings[neighbor_name][item_name])
 
-		# Add the reading of this node
-		acc_reading += self_weight * self.get_sensor_reading()
+					if len(neighbor_input):
+						# The weight to apply to all neighbor readings
+						weight = (design_factor * 2 * self.reading_noise) / ((self.range_s ** 2) * len(neighbor_input))
 
-		return acc_reading
+						acc_weight = weight * len(neighbor_input)
+
+						acc_reading = 0
+
+						for reading in neighbor_input:
+
+							acc_reading += weight * reading						
+
+					else:
+						acc_weight = 0
+						acc_reading = 0
+
+					# self weight
+					self_weight = 1.0 - acc_weight
+
+					# Set the cell value
+					self.unstable_field_prediction[cell_index] = self_weight * self.this_field_prediction[cell_index] + acc_reading
+					"""
+				self.unstable_field_prediction[cell_index] = self.this_field_prediction[cell_index]
+
+			"""
+			# Go through each neighbor reading and accumulate the reading
+			acc_reading = np.zeros(T_space)
+			acc_weight = np.zeros(T_space)
+			for neighbor_name in self.neighbor_readings:
+
+				# Get the value of the neighbor reading
+				neighbor_value = self.neighbor_readings[neighbor_name]
+
+				# Set the weight of this neighbor
+				weight = (design_factor * 2 * self.reading_noise) / ((self.range_s ** 2) * self.get_degree())
+
+				# Track the weights
+				acc_weight += weight
+
+				# Add the reading based on the weight
+				acc_reading += weight * neighbor_value
+
+			# Set the weight of this node so that all weights sum to 1
+			self_weight = 1.0 - acc_weight
+
+			# Add the reading of this node
+			acc_reading += self_weight * self.get_sensor_reading()
+			"""
+			#return acc_reading
 
 	# Weight design 2 from Lecture 10
 	# Choosing midpoint of possible values
@@ -147,9 +194,9 @@ class Node:
 
 	# The methods for fusing neighbor readings
 	consensus_methods = {
-				"WeightDesign1" : design1,
-				"WeightDesign2" : design2,
-				"MaxDegree" : max_degree,
+				"Weight Design 1" : design1,
+				"Weight Design 2" : design2,
+				"Max Degree" : max_degree,
 				"Metropolis" : metropolis
 				}
 	
@@ -184,7 +231,7 @@ class Node:
 	#
 	# consensus_method : string
 	# The name of the method to use to fuse readings from neighbors
-	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6, consensus_method = "MaxDegree"):
+	def __init__(self, environment, network, name, reading_noise=.01, range_s=1.6, consensus_method = "Max Degree"):
 
 		# Save the environment and network
 		self.environment = environment
@@ -203,14 +250,26 @@ class Node:
 		# Holds the readings of every neighbor
 		self.neighbor_readings = {}
 
+		# Each node has an internal field map, unknown cells are set to NaN
+		self.stable_field_prediction = np.full((25,25), np.nan)
+		self.unstable_field_prediction = np.full((25,25), np.nan)
+
 		# The last reading that is valid, to avoid race conditions among node reports
 		# Use a noisy intial estimate of the target without any fusion
-		self.stable_reading = np.random.normal(scale=30, size=(T_space,)) + self.environment.get_target_reading_at(0)
-		#self.stable_reading = self.environment.get_target_reading_at(0) + np.random.normal(scale=np.sqrt((np.linalg.norm(self.get_position() - self.environment.get_target_position_at(0)) ** 2 + self.reading_noise) / (self.range_s ** 2)), size=(T_space,))
-		#self.stable_reading = self.get_sensor_reading()
+		initial_readings = self.environment.get_cell_readings(self.name)
+
+		# Add noise to the readings and update the field
+		for cell_name in initial_readings:
+
+			index = np.array(cell_name.split()).astype(np.uint8)
+
+			self.unstable_field_prediction[index[0], index[1]] = initial_readings[cell_name]
+
+		#if self.name == "0":
+		#	print self.unstable_field_prediction
 
 		# The value storing the consensus while the other nodes are updating
-		self.unstable_reading = None
+		#self.unstable_reading = None
 
 		# Set which consensus method to use
 		self.fuse_readings = self.consensus_methods[consensus_method]
@@ -222,6 +281,9 @@ class Node:
 		# Update the neighbor readings
 		self.acquire_neighbor_readings()
 
+		# Get the reading from this node
+		self.get_sensor_reading()
+
 		# Use the set consensus method to get the reading
 		self.unstable_reading = self.fuse_readings(self)
 
@@ -231,7 +293,7 @@ class Node:
 	# Once the network is done updating, the unstable reading becomes the new stable reading
 	def stabilize(self):
 
-		self.stable_reading = self.unstable_reading
+		self.stable_field_prediction = self.unstable_field_prediction
 
 	# Gets the postion
 	#
@@ -241,20 +303,40 @@ class Node:
 		return self.environment.get_node_position(self.name)
 
 	# Gets the sensor reading of this node
-	#
-	# return : numpy array : shape (R_space,)
 	def get_sensor_reading(self):
+
+		self.this_field_prediction = np.full((25,25), np.nan)
+
+		# Get the readings of every cell in range
+		self.readings = self.environment.get_cell_readings(self.name)
 
 		# Get the deviation for the noise term
 		sigma = np.sqrt((np.linalg.norm(self.get_position() - self.network.get_network_average_position()) ** 2 + self.reading_noise) / (self.range_s ** 2))
 
 		# Get the noise
-		noise = np.random.normal(scale=sigma, size=(T_space,))
+		#noise = np.random.normal(scale=sigma, size=(T_space,))
+
+		# Add every reading to the unstable matrix
+		for cell_name in self.readings:
+
+			index = np.array(cell_name.split()).astype(np.uint8)
+
+			noise = np.random.normal(scale=sigma, size=(T_space,))
+
+			self.this_field_prediction[index[0], index[1]] = self.readings[cell_name] + noise
+
+			self.readings[cell_name] += noise
+
+		cp = np.nan_to_num(self.this_field_prediction)
+
+		#fig, ax = plt.subplots()
+		#heatmap = ax.pcolor(cp, cmap=plt.cm.Blues)
+		#plt.show()
 
 		# Get the measurement from the environment and add the noise
-		measurement = self.environment.get_target_reading() + noise
+		#self.unstable_reading[self.unstable_reading] + noise
 
-		return measurement
+		#return measurement
 
 	# Acquires the neighbors of this node
 	def acquire_neighbors(self):
@@ -279,7 +361,8 @@ class Node:
 		# Go through each neighbor and get the reading
 		for node in self.neighbors:
 
-			self.neighbor_readings[node] = self.network.get_node_reading(node)
+			#self.neighbor_readings[node] = self.network.get_node_reading(node)
+			self.neighbor_readings[node] = self.environment.get_cell_readings(node)
 
 # The environment that the nodes are in
 # Nodes interact with this class to find their positions and sensor readings
@@ -312,20 +395,25 @@ class Environment:
 	# max_neighbors : int
 	# The maximum number of neighbors to accept, nodes closer have priority
 	# Defaults to None, means that every node in the communication_radius will be a neighbor
-	def __init__(self, target_position, target_reading, communication_radius = None, max_neighbors = None):
+	def __init__(self, field_name = "field.txt", communication_radius = None, sensing_max = 8.0, max_neighbors = None):
 
 		# Create the node dictionary
 		self.nodes = {}
 
-		# Save the target position function
-		self.target_position = target_position
+		# Load the file
+		with open(field_name, 'r') as field_file:
 
-		# Save the reading position function
-		self.target_reading = target_reading
+			# Get the entire contents of the file
+			file_contents = field_file.read()
+
+			# Get a numpy array
+			# TODO: make reshaping more general
+			self.field = np.array(file_contents.strip("\n ").split()).astype(np.float32).reshape((25,25))
 
 		# Set the node communication parameters
 		self.communication_radius = communication_radius
 		self.max_neighbors = max_neighbors
+		self.sensing_max = sensing_max
 
 		# Set the initial time to 0
 		self.time_step = 0
@@ -360,35 +448,47 @@ class Environment:
 	# Returns the true position of the target
 	#
 	# return : numpy array : shape (R_space,)
-	def get_target_position(self):
+	#def get_target_position(self):
 
-		return self.get_target_position_at(self.time_step)
+	#	return self.get_target_position_at(self.time_step)
 
 	# Returns the true reading of the target
 	#
 	# return : numpy array : shape (T_space,)
-	def get_target_reading(self):
+	#def get_target_reading(self):
 
-		return self.get_target_reading_at(self.time_step)
+	#	return self.get_target_reading_at(self.time_step)
 
 	# Evaluates the position function at the specified time step
 	#
 	# return : numpy array : shape (R_space,)
-	def get_target_position_at(self, time_step):
+	#def get_target_position_at(self, time_step):
 
-		return self.target_position(time_step)
+	#	return self.target_position(time_step)
 
 	# Evaluates the reading function at the specified time step
 	#
 	# return : numpy array : shape (T_space,)
-	def get_target_reading_at(self, time_step):
+	#def get_target_reading_at(self, time_step):
 
-		return self.target_reading(time_step)
+	#	return self.target_reading(time_step)
 
-	# Sets the communication radius to the sent value
-	def set_communication_radius(self, new_communication_radius):
+	# Returns the reading of all cells within the range of the node
+	def get_cell_readings(self, node_name):
 
-		self.communication_radius = new_communication_radius
+		node_position = self.nodes[node_name]
+
+		# Get a list of cells in range
+		# TODO: make this more efficient
+		cells = {}
+		for x_index in range(25):
+			for y_index in range(25):
+
+				if distance.euclidean(node_position, np.array([x_index, y_index])) <= self.sensing_max:
+
+					cells[str(x_index) + " " + str(y_index)] = self.field[x_index, y_index]
+
+		return cells
 
 	# Returns the neighbors of the node
 	#
@@ -497,17 +597,51 @@ class Network:
 		node_readings = []
 		for node_name in self.nodes:
 
-			node_readings.append(self.nodes[node_name].stable_reading)
+			node_readings.append(self.nodes[node_name].stable_field_prediction)
 
-		node_readings = np.array(node_readings)
+		#node_readings = np.array(node_readings)
+
+		network_map = np.full((25,25), 0)
+		network_confidence = np.zeros((25,25))
+
+		# Go through each cell and get values from node predictions
+		for x_index in range(25):
+			for y_index in range(25):
+
+				cell_vals = []
+
+				index = (x_index, y_index)
+
+				for plane in node_readings:
+
+					# Get the value
+					val = plane[index]
+
+					if not np.isnan(val):
+
+						cell_vals.append(val)
+
+				#if x_index == 13 and y_index == 13:
+
+				#	print cell_vals
+
+				if not np.isnan(scipy.average(np.array(cell_vals))):
+					network_map[index] = scipy.average(np.array(cell_vals))
+
+					network_confidence[index] = scipy.std(np.array(cell_vals))
+
+				else:
+
+					network_map[index] = 0
+					network_confidence[index] = 0
 
 		# Get the average
-		network_avg = scipy.average(node_readings)
+		#network_avg = scipy.average(node_readings)
 
 		# Get the standard deviation
-		network_std = scipy.std(node_readings)
+		#network_std = scipy.std(node_readings)
 
-		return network_avg, network_std
+		return network_map, network_confidence
 
 	# Adds a node to the nework
 	#
@@ -549,7 +683,7 @@ class Network:
 	# Gets the stable reading of a node
 	def get_node_reading(self, node_name):
 
-		return self.nodes[node_name].stable_reading
+		return self.nodes[node_name].stable_field_prediction
 
 	# Gets the degree of a node
 	def get_node_degree(self, node_name):
@@ -648,6 +782,30 @@ class Network:
 
 		return self.max_node, self.min_node
 
+# Target position implementations
+
+# Stationary at the center of the field
+#def stationary_center(time_step, max_range):
+
+#	return np.empty((R_space,)).fill(max_range / 2.0)
+
+# Dictionary of target position functions
+#target_position_functions = {
+#			"Stationary Center" : stationary_center
+#				}
+
+# Target reading implementations
+
+# Always returns 50
+#def constant_50(time_step):
+
+#	return np.empty((T_space,)).fill(50.0)
+
+# Dictionary of target reading functions
+#target_reading_functions = {
+#			"Constant 50" : constant_50
+#				}
+
 # Runs the entire consensus filter and visualizes results
 class Simulate:
 
@@ -665,10 +823,6 @@ class Simulate:
 	# Information about the network at each timestep
 	#
 	# default_consensus_method : string
-	# What nodes will use to fuse readings
-	#
-	# alternate_comm : float
-	# If not None, the network will set the communication radius to this value every 10 cycles to create a dynamic network
 
 	# Constructor
 	#
@@ -681,36 +835,14 @@ class Simulate:
 	# How many nodes to put into the network
 	#
 	# default_consensus_method : string
-	def __init__(self, max_range, num_nodes = 10, communication_radius = 1.7, default_consensus_method = "MaxDegree", target_position_name = "StationaryCenter", target_reading_name = "Constant50", alternate_comm = None):
-
-		print "Using consensus method: ", default_consensus_method
+	def __init__(self, max_range, num_nodes = 30, communication_radius = 10, default_consensus_method = "Max Degree", field_name="field.txt"):
 
 		# Nodes will use this as their consensus method unless another is specified at creation time
 		self.default_consensus_method = default_consensus_method
 
-		# Set the target position function
-		if target_position_name == "StationaryCenter":
-
-			target_position_function = lambda time_step: np.full((R_space,), max_range / 2.0)
-
-		# Not known
-		else:
-
-			raise ValueError
-
-		# Set the target reading function
-		if target_reading_name == "Constant50":
-
-			target_reading_function = lambda time_step: np.full((T_space,), 50.0)
-
-		# Not Known
-		else:
-
-			raise ValueError
-
 		# Create the environment
 		# Use a constant position and reading for the target
-		self.environment = Environment(target_position_function, target_reading_function, communication_radius = communication_radius)
+		self.environment = Environment(field_name = field_name, communication_radius = communication_radius)
 
 		# Make a network
 		self.make_network(max_range, num_nodes = num_nodes)
@@ -720,10 +852,6 @@ class Simulate:
 
 		# Holds the network average and standard deviation at each time step
 		self.info = []
-
-		# The alternate communication radius
-		self.communication_radius = communication_radius
-		self.alternate_comm = alternate_comm
 
 	# Makes a network, ensuring that it is connected
 	#
@@ -740,8 +868,8 @@ class Simulate:
 			# Create the network
 			self.network = Network()
 
-			# Randomly generate 10 nodes with positions around the target
-			random_nodes = np.random.rand(num_nodes, R_space) * max_range
+			# Randomly generate nodes with positions around the target
+			random_nodes = (np.random.rand(num_nodes, R_space) * max_range).astype(np.uint8)
 
 			# Place the nodes into the environment and network
 			for node_index, node_position in enumerate(random_nodes):
@@ -753,7 +881,7 @@ class Simulate:
 				self.environment.add_node(node_name, node_position)
 
 				# Create the node, use default values
-				new_node = Node(self.environment, self.network, node_name, consensus_method = self.default_consensus_method)
+				new_node = Node(self.environment, self.network, node_name, range_s = 100.0 ,consensus_method = self.default_consensus_method)
 
 				# Add to the network
 				self.network.add_node(node_name, new_node)
@@ -765,41 +893,21 @@ class Simulate:
 			retry_count += 1
 
 		# Throw exception
-		if not network_connected:
+		#if not network_connected:
 
-			raise RuntimeError
+		#	raise RuntimeError
 
 	# Runs the network and environment for the specified number of iterations
 	# TODO: make convergence a condition
 	def run(self, iterations = 1000):
 
-		# For dynamic network
-		use_alt = True
-
 		for time_step in range(iterations):
 
-			# Switch the communication radius every 10 cycles, if alt is set
-			if self.alternate_comm is not None:
-
-				if time_step % 10 == 0:
-
-					# Flip the toggle
-					use_alt = not use_alt
-
-					# Set the communication radius in the environment
-					if use_alt:
-
-						self.environment.set_communication_radius(self.alternate_comm)
-
-					else:
-
-						self.environment.set_communication_radius(self.communication_radius)
-
 			# Have the network update all of the readings
-			avg, std = self.network.get_network_reading()
+			#avg, std = self.network.get_network_reading()
+			self.last_avg, self.last_std = self.network.get_network_reading()
 
-			# Log the info
-			self.info.append([self.environment.get_target_reading(), self.environment.get_target_position(), avg, std, self.network.get_node_reading(self.max_node), self.network.get_node_reading(self.min_node)])
+			print "Completed iteration: ", time_step
 
 			# Advance the environment
 			self.environment.advance()
@@ -812,13 +920,11 @@ class Simulate:
 		plt.figure(1)
 
 		# Set the title
-		plt.title("Node and Target Positions, Normal Communication Radius")
+		plt.title("Node Positions")
 
 		# Set the x and y axis names
 		plt.xlabel("X location")
 		plt.ylabel("Y location")
-
-		self.environment.set_communication_radius(self.communication_radius)
 
 		# Plot the neighbors of each node
 		edges = self.network.make_graph()
@@ -836,13 +942,6 @@ class Simulate:
 			# Make a line
 			plt.plot([first_coordinates[0], second_coordinates[0]], [first_coordinates[1], second_coordinates[1]], 'bs-', markersize=0.0)
 
-		# Mark the interest nodes
-		max_location = self.environment.get_node_position(self.max_node)
-		plt.plot(max_location[0], max_location[1], 'c*', markersize=20.0, label="Max Node")
-
-		min_location = self.environment.get_node_position(self.min_node)
-		plt.plot(min_location[0], min_location[1], 'm*', markersize=20.0, label="Min Node")
-
 		# Add the locations of every node in the graph
 		# Uses the true positions in the environment
 		node_positions_x = []
@@ -859,145 +958,50 @@ class Simulate:
 		# Plot points
 		plt.plot(node_positions_x, node_positions_y, 'ko', label="Nodes")
 
-		# Plot the target location
-		# Use the starting position, target is stationary for now
-		target_position = self.environment.get_target_position()
-		plt.plot(target_position[0], target_position[1], 'r*', markersize=20.0, label="Target")
-
 		# Set the legend
 		plt.legend(loc="best")
 
-		# Figure 3 will be the other network configuration, if the network is dynamic
-		if self.alternate_comm is not None:
-			plt.figure(3)
+		# The network prediction
+		fig, ax = plt.subplots()
 
-			# Set the title
-			plt.title("Node and Target Positions, Alternate Communication Radius")
+		plt.title("Network Prediction")
 
-			# Set the x and y axis names
-			plt.xlabel("X location")
-			plt.ylabel("Y location")
+		heatmap = ax.pcolor(self.last_avg, cmap=plt.cm.RdBu)
 
-			self.environment.set_communication_radius(self.alternate_comm)
+		# The actual field
+		fig, ax = plt.subplots()
 
-			# Plot the neighbors of each node
-			edges = self.network.make_graph()
+		plt.title("True Field")
 
-			# Make a line for each neighbor
-			for edge in edges:
+		heatmap = ax.pcolor(self.environment.field, cmap=plt.cm.RdBu)
 
-				# Unpack the node names
-				first_node, second_node = edge.split("-")
+		# The error between the prediction and the true field
+		fig, ax = plt.subplots()
 
-				# Get the coordinates of each node
-				first_coordinates = self.environment.get_node_position(first_node)
-				second_coordinates = self.environment.get_node_position(second_node)
+		plt.title("Mean Squared Error")
 
-				# Make a line
-				plt.plot([first_coordinates[0], second_coordinates[0]], [first_coordinates[1], second_coordinates[1]], 'bs-', markersize=0.0)
+		heatmap = ax.pcolor(np.power(self.environment.field - self.last_avg, 2), cmap=plt.cm.Reds)
 
-			# Mark the interest nodes
-			max_location = self.environment.get_node_position(self.max_node)
-			plt.plot(max_location[0], max_location[1], 'c*', markersize=20.0, label="Max Node")
+		# Confidence at each location
+		fig, ax = plt.subplots()
 
-			min_location = self.environment.get_node_position(self.min_node)
-			plt.plot(min_location[0], min_location[1], 'm*', markersize=20.0, label="Min Node")
+		plt.title("Confidence")
 
-			# Add the locations of every node in the graph
-			# Uses the true positions in the environment
-			node_positions_x = []
-			node_positions_y = []
-			for node_name in self.network.node_names():
+		heatmap = ax.pcolor(self.last_std, cmap=plt.cm.Reds)
 
-				# Get the position of the node
-				node_position = self.environment.get_node_position(node_name)
-
-				# Add it to the list
-				node_positions_x.append(node_position[0])
-				node_positions_y.append(node_position[1])
-
-			# Plot points
-			plt.plot(node_positions_x, node_positions_y, 'ko', label="Nodes")
-
-			# Plot the target location
-			# Use the starting position, target is stationary for now
-			target_position = self.environment.get_target_position()
-			plt.plot(target_position[0], target_position[1], 'r*', markersize=20.0, label="Target")
-
-			# Set the legend
-			plt.legend(loc="best")
-
-		# Plot the network prediction on another figure
-		plt.figure(2)
-
-		plt.title("Network predictions")
-
-		plt.xlabel("Time")
-		plt.ylabel("Prediction")
-
-		# Get the target signal, network average, and interest node predictions
-		target_signal = []
-		network_prediction = []
-		max_prediction = []
-		min_prediction = []
-		for item in self.info:
-
-			# Target
-			target_signal.append(item[0])
-
-			# Network average
-			network_prediction.append(item[2])
-
-			# Max prediction
-			max_prediction.append(item[4])
-
-			# Min prediction
-			min_prediction.append(item[5])
-
-		# Network average
-		plt.plot(network_prediction, 'b-', label="Network Average Prediction")
-
-		# Max
-		plt.plot(max_prediction, 'c-', label="Max Node Prediction")
-
-		# Min
-		plt.plot(min_prediction, 'm-', label="Min Node Prediction")
-
-		# Target
-		plt.plot(target_signal, 'r--', label="Target Signal")
-
-		# Set the legend
-		plt.legend(loc="best")
-
-		print "Average of last 5 network predictions: ", np.average(network_prediction[-5:], axis = 0), "\n\n"
-		print "Displaying positions of nodes and the target"
-		print "Displaying network output"
-		print "Exit window to continue"
-
-		# Show the graph
+		# Show the figures
 		plt.show()
 
 if __name__ == "__main__":
 
-	if len(sys.argv) > 1:
-		# Get the fusion method
-		consensus_method = sys.argv[1]
-
-	else:
-
-		consensus_method = "MaxDegree"
+	# Get the fusion method
+	#consensus_method = sys.argv[1]
 
 	# Seed the random function for reproducability
 	np.random.seed(50)
 
-	sim = Simulate(3, default_consensus_method = consensus_method, alternate_comm = 1.5)
+	sim = Simulate(25, default_consensus_method = "Weight Design 1")
 
-	num_iterations = 100
-
-	if consensus_method == "WeightDesign2":
-
-		num_iterations = 1000
-
-	sim.run(num_iterations)
+	sim.run(10)
 
 	sim.visualize()
