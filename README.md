@@ -1,4 +1,4 @@
-# CS791X_MSN
+# Sensor Filtering and Fusion
 
 ## Project 1: Kalman Filter
 
